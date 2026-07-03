@@ -108,14 +108,52 @@ def build_batter_embed(name: str, team: str, splits: list[dict], platoon: dict |
     return embed
 
 
-def build_joke_embed() -> discord.Embed:
-    # --- JOKE ENTRY: delete this whole function whenever you're done with it ---
-    return discord.Embed(
-        title="RSguy (N/A)  🥶 Ice Cold",
-        description="0-for-forever this season. 0 HR, 0 RBI, .000/.000/.000\nDesignated for assignment from good vibes.",
-        color=discord.Color.dark_grey(),
-    )
-    # --- end joke entry ---
+def build_joke_embed(player_id: int) -> discord.Embed:
+    # --- JOKE ENTRIES: delete this whole function + JOKE_PLAYERS dict whenever you're done ---
+    p = JOKE_PLAYERS.get(player_id)
+    if not p:
+        return discord.Embed(title="Unknown", description="No data.")
+    title = f"{p['name']} ({p['team']})"
+    if p.get("tag"):
+        title += f"  {p['tag']}"
+    return discord.Embed(title=title, description=p["line"], color=p["color"])
+    # --- end joke entries ---
+
+
+JOKE_PLAYERS = {
+    # --- JOKE ENTRIES: delete this whole dict whenever you're done ---
+    -1: {"name": "RSGuy", "team": "N/A",
+         "line": "0-for-forever this season. 0 HR, 0 RBI, .000/.000/.000\nDesignated for assignment from good vibes.",
+         "tag": "🥶 Ice Cold", "color": discord.Color.dark_grey()},
+    -2: {"name": "LiveBetMike", "team": "GOAT",
+         "line": "162-for-162 this season. 62 HR, 180 RBI, 1.000/1.000/4.000\nUnanimous MVP, unanimous Cy Young, also somehow leading in saves.",
+         "tag": "🔥🔥🔥 Unanimous MVP", "color": discord.Color.gold()},
+    -3: {"name": "Derb", "team": "N/A",
+         "line": ".275 AVG, 12 HR, 45 RBI, .360 OBP\nSteady utility guy, plays every position, never complains.",
+         "tag": None, "color": discord.Color.blue()},
+    -4: {"name": "hannyessir", "team": "N/A",
+         "line": ".240 AVG, 3 HR, 28 RBI, .410 OBP\nWon't chase a pitch out of the zone if his life depended on it.",
+         "tag": "👀 Elite Eye", "color": discord.Color.teal()},
+    -5: {"name": "JJMac", "team": "N/A",
+         "line": ".230 AVG, 34 HR, 71 RBI, 180 K\nEvery at-bat is either a homer or a strikeout, no in-between.",
+         "tag": "💣 Boom or Bust", "color": discord.Color.orange()},
+    -6: {"name": "Kyle Pitts Whisperer", "team": "N/A",
+         "line": ".310 AVG, 8 HR, 40 RBI\nInexplicably excellent at drawing pass interference calls. Still not sure how that helps in baseball.",
+         "tag": None, "color": discord.Color.green()},
+    -7: {"name": "Sach", "team": "N/A",
+         "line": ".290 AVG, 2 HR, 22 RBI, 41 SB\nLeadoff speedster, first to third on a bunt.",
+         "tag": "⚡ Speedster", "color": discord.Color.light_grey()},
+    -8: {"name": "Mas", "team": "N/A",
+         "line": ".265 AVG, 18 HR, 88 RBI\nHits .400 with runners in scoring position, ice cold otherwise.",
+         "tag": "🧊 Mr. Clutch", "color": discord.Color.purple()},
+    -9: {"name": "Don", "team": "N/A",
+         "line": ".300 AVG, 10 HR, 60 RBI, 24 K all season\nPuts the bat on everything, old-school contact hitter.",
+         "tag": None, "color": discord.Color.dark_green()},
+    -10: {"name": "Cash Combat", "team": "N/A",
+          "line": ".255 AVG, 41 HR, 95 RBI, .520 SLG\nSwings for the fences every single time. It usually works.",
+          "tag": "🔥 Hot", "color": discord.Color.red()},
+    # --- end joke entries ---
+}
 
 
 class HittersBot(discord.Client):
@@ -215,9 +253,10 @@ class HittersBot(discord.Client):
             for p in hitters:
                 directory.append({"id": p["id"], "name": p["name"], "team": team["abbreviation"]})
 
-        # --- JOKE ENTRY: remove this block whenever you're done with it ---
-        directory.append({"id": -1, "name": "RSguy", "team": "N/A"})
-        # --- end joke entry ---
+        # --- JOKE ENTRIES: remove this block whenever you're done with it ---
+        for jid, jp in JOKE_PLAYERS.items():
+            directory.append({"id": jid, "name": jp["name"], "team": jp["team"]})
+        # --- end joke entries ---
 
         self.player_directory = directory
         log.info("Player directory refreshed: %d hitters", len(directory))
@@ -228,10 +267,12 @@ class HittersBot(discord.Client):
         return [app_commands.Choice(name=f"{p['name']} ({p['team']})", value=str(p["id"])) for p in matches]
 
     def _resolve_player(self, name: str):
-        if name.isdigit():
+        try:
             pid = int(name)
             match = next((p for p in self.player_directory if p["id"] == pid), None)
             return (pid, match) if match else (pid, None)
+        except ValueError:
+            pass
         match = next((p for p in self.player_directory if name.lower() in p["name"].lower()), None)
         return (match["id"], match) if match else (None, None)
 
@@ -242,11 +283,11 @@ class HittersBot(discord.Client):
             await interaction.followup.send(f"Couldn't find a hitter matching '{name}'.")
             return
 
-        # --- JOKE ENTRY: remove this block whenever you're done with it ---
-        if person_id == -1:
-            await interaction.followup.send(embed=build_joke_embed())
+        # --- JOKE ENTRIES: remove this block whenever you're done with it ---
+        if person_id is not None and person_id < 0:
+            await interaction.followup.send(embed=build_joke_embed(person_id))
             return
-        # --- end joke entry ---
+        # --- end joke entries ---
 
         try:
             splits = mlb_api.get_batting_game_log(person_id)
