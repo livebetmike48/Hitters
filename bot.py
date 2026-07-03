@@ -27,7 +27,8 @@ def et_date_str(offset_days: int = 0) -> str:
     return et.strftime("%Y-%m-%d")
 
 
-def build_batter_embed(name: str, team: str, splits: list[dict], platoon: dict | None = None) -> discord.Embed:
+def build_batter_embed(name: str, team: str, splits: list[dict], platoon: dict | None = None,
+                        since_date: str | None = None) -> discord.Embed:
     if not splits:
         return discord.Embed(title=name, description="No game log found for this season yet.",
                               color=discord.Color.light_grey())
@@ -77,6 +78,22 @@ def build_batter_embed(name: str, team: str, splits: list[dict], platoon: dict |
             inline=False,
         )
 
+    if since_date:
+        since_splits = [s for s in splits if s["date"] and s["date"] >= since_date]
+        since_summary = sh.summarize_batting(since_splits, len(since_splits)) if since_splits else None
+        if since_summary:
+            embed.add_field(
+                name=f"Since {since_date}",
+                value=(
+                    f"AVG **{since_summary['avg']}** / OBP {since_summary['obp']} / "
+                    f"SLG {since_summary['slg']} / OPS {since_summary['ops']}\n"
+                    f"{since_summary['hr']} HR, {since_summary['rbi']} RBI over {since_summary['count']} games"
+                ),
+                inline=False,
+            )
+        else:
+            embed.add_field(name=f"Since {since_date}", value="No games found in this range.", inline=False)
+
     if platoon:
         for key, label in (("vs_lhp", "vs LHP (season)"), ("vs_rhp", "vs RHP (season)")):
             p = platoon.get(key)
@@ -89,6 +106,16 @@ def build_batter_embed(name: str, team: str, splits: list[dict], platoon: dict |
 
     embed.set_footer(text="Data: MLB Stats API")
     return embed
+
+
+def build_joke_embed() -> discord.Embed:
+    # --- JOKE ENTRY: delete this whole function whenever you're done with it ---
+    return discord.Embed(
+        title="RSguy (N/A)  🥶 Ice Cold",
+        description="0-for-forever this season. 0 HR, 0 RBI, .000/.000/.000\nDesignated for assignment from good vibes.",
+        color=discord.Color.dark_grey(),
+    )
+    # --- end joke entry ---
 
 
 class HittersBot(discord.Client):
@@ -109,7 +136,7 @@ class HittersBot(discord.Client):
 
         batter_cmd = app_commands.Command(
             name="batter",
-            description="Recent stats, streaks, and hot/cold status for any hitter",
+            description="Recent stats, streaks, hot/cold status for any hitter (optional: since YYYY-MM-DD)",
             callback=self._batter_callback,
         )
         self.tree.add_command(batter_cmd)
@@ -187,6 +214,11 @@ class HittersBot(discord.Client):
                 continue
             for p in hitters:
                 directory.append({"id": p["id"], "name": p["name"], "team": team["abbreviation"]})
+
+        # --- JOKE ENTRY: remove this block whenever you're done with it ---
+        directory.append({"id": -1, "name": "RSguy", "team": "N/A"})
+        # --- end joke entry ---
+
         self.player_directory = directory
         log.info("Player directory refreshed: %d hitters", len(directory))
 
@@ -203,12 +235,19 @@ class HittersBot(discord.Client):
         match = next((p for p in self.player_directory if name.lower() in p["name"].lower()), None)
         return (match["id"], match) if match else (None, None)
 
-    async def _batter_callback(self, interaction: discord.Interaction, name: str):
+    async def _batter_callback(self, interaction: discord.Interaction, name: str, since: str | None = None):
         await interaction.response.defer()
         person_id, match = self._resolve_player(name)
         if person_id is None:
             await interaction.followup.send(f"Couldn't find a hitter matching '{name}'.")
             return
+
+        # --- JOKE ENTRY: remove this block whenever you're done with it ---
+        if person_id == -1:
+            await interaction.followup.send(embed=build_joke_embed())
+            return
+        # --- end joke entry ---
+
         try:
             splits = mlb_api.get_batting_game_log(person_id)
         except Exception as e:
@@ -221,7 +260,7 @@ class HittersBot(discord.Client):
             platoon = None
         display_name = match["name"] if match else name
         team = match["team"] if match else "?"
-        await interaction.followup.send(embed=build_batter_embed(display_name, team, splits, platoon))
+        await interaction.followup.send(embed=build_batter_embed(display_name, team, splits, platoon, since))
 
     async def _scan_all_hitters(self, interaction: discord.Interaction):
         """Shared scan used by /hothitters, /coldhitters, /streaks -- one pass over every
