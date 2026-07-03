@@ -1,6 +1,6 @@
 import os
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, time as dtime
 
 import discord
 from discord import app_commands
@@ -108,54 +108,6 @@ def build_batter_embed(name: str, team: str, splits: list[dict], platoon: dict |
     return embed
 
 
-def build_joke_embed(player_id: int) -> discord.Embed:
-    # --- JOKE ENTRIES: delete this whole function + JOKE_PLAYERS dict whenever you're done ---
-    p = JOKE_PLAYERS.get(player_id)
-    if not p:
-        return discord.Embed(title="Unknown", description="No data.")
-    title = f"{p['name']} ({p['team']})"
-    if p.get("tag"):
-        title += f"  {p['tag']}"
-    return discord.Embed(title=title, description=p["line"], color=p["color"])
-    # --- end joke entries ---
-
-
-JOKE_PLAYERS = {
-    # --- JOKE ENTRIES: delete this whole dict whenever you're done ---
-    -1: {"name": "RSGuy", "team": "N/A",
-         "line": "0-for-forever this season. 0 HR, 0 RBI, .000/.000/.000\nDesignated for assignment from good vibes.",
-         "tag": "🥶 Ice Cold", "color": discord.Color.dark_grey()},
-    -2: {"name": "LiveBetMike", "team": "GOAT",
-         "line": "162-for-162 this season. 62 HR, 180 RBI, 1.000/1.000/4.000\nUnanimous MVP, unanimous Cy Young, also somehow leading in saves.",
-         "tag": "🔥🔥🔥 Unanimous MVP", "color": discord.Color.gold()},
-    -3: {"name": "Derb", "team": "N/A",
-         "line": ".275 AVG, 12 HR, 45 RBI, .360 OBP\nSteady utility guy, plays every position, never complains.",
-         "tag": None, "color": discord.Color.blue()},
-    -4: {"name": "hannyessir", "team": "N/A",
-         "line": ".240 AVG, 3 HR, 28 RBI, .410 OBP\nWon't chase a pitch out of the zone if his life depended on it.",
-         "tag": "👀 Elite Eye", "color": discord.Color.teal()},
-    -5: {"name": "JJMac", "team": "N/A",
-         "line": ".230 AVG, 34 HR, 71 RBI, 180 K\nEvery at-bat is either a homer or a strikeout, no in-between.",
-         "tag": "💣 Boom or Bust", "color": discord.Color.orange()},
-    -6: {"name": "Kyle Pitts Whisperer", "team": "N/A",
-         "line": ".310 AVG, 8 HR, 40 RBI\nInexplicably excellent at drawing pass interference calls. Still not sure how that helps in baseball.",
-         "tag": None, "color": discord.Color.green()},
-    -7: {"name": "Sach", "team": "N/A",
-         "line": ".290 AVG, 2 HR, 22 RBI, 41 SB\nLeadoff speedster, first to third on a bunt.",
-         "tag": "⚡ Speedster", "color": discord.Color.light_grey()},
-    -8: {"name": "Mas", "team": "N/A",
-         "line": ".265 AVG, 18 HR, 88 RBI\nHits .400 with runners in scoring position, ice cold otherwise.",
-         "tag": "🧊 Mr. Clutch", "color": discord.Color.purple()},
-    -9: {"name": "Don", "team": "N/A",
-         "line": ".300 AVG, 10 HR, 60 RBI, 24 K all season\nPuts the bat on everything, old-school contact hitter.",
-         "tag": None, "color": discord.Color.dark_green()},
-    -10: {"name": "Cash Combat", "team": "N/A",
-          "line": ".255 AVG, 41 HR, 95 RBI, .520 SLG\nSwings for the fences every single time. It usually works.",
-          "tag": "🔥 Hot", "color": discord.Color.red()},
-    # --- end joke entries ---
-}
-
-
 class HittersBot(discord.Client):
     def __init__(self):
         super().__init__(intents=intents)
@@ -253,11 +205,6 @@ class HittersBot(discord.Client):
             for p in hitters:
                 directory.append({"id": p["id"], "name": p["name"], "team": team["abbreviation"]})
 
-        # --- JOKE ENTRIES: remove this block whenever you're done with it ---
-        for jid, jp in JOKE_PLAYERS.items():
-            directory.append({"id": jid, "name": jp["name"], "team": jp["team"]})
-        # --- end joke entries ---
-
         self.player_directory = directory
         log.info("Player directory refreshed: %d hitters", len(directory))
 
@@ -282,12 +229,6 @@ class HittersBot(discord.Client):
         if person_id is None:
             await interaction.followup.send(f"Couldn't find a hitter matching '{name}'.")
             return
-
-        # --- JOKE ENTRIES: remove this block whenever you're done with it ---
-        if person_id is not None and person_id < 0:
-            await interaction.followup.send(embed=build_joke_embed(person_id))
-            return
-        # --- end joke entries ---
 
         try:
             splits = mlb_api.get_batting_game_log(person_id)
@@ -427,9 +368,26 @@ class HittersBot(discord.Client):
         log.info("Logged in as %s", self.user)
         if not refresh_directory_loop.is_running():
             refresh_directory_loop.start(self)
+        if not daily_streaks_post.is_running():
+            daily_streaks_post.start(self)
 
 
 client = HittersBot()
+
+
+async def send_chunked_to_channel(channel, header: str, lines: list[str], limit: int = 1900):
+    """Same chunking logic as _send_chunked, but for scheduled posts that aren't triggered by a command."""
+    if not lines:
+        await channel.send(header + "Nobody qualifies right now.")
+        return
+    chunk = header
+    for line in lines:
+        if len(chunk) + len(line) > limit:
+            await channel.send(chunk)
+            chunk = ""
+        chunk += line
+    if chunk.strip():
+        await channel.send(chunk)
 
 
 @tasks.loop(hours=ROSTER_REFRESH_HOURS)
@@ -439,6 +397,42 @@ async def refresh_directory_loop(bot: HittersBot):
 
 @refresh_directory_loop.before_loop
 async def before_refresh():
+    await client.wait_until_ready()
+
+
+# 11:30 AM ET, approximated as UTC-4 (matches the rest of this bot's ET handling).
+# NOTE: like everywhere else in this bot, this doesn't auto-adjust for EST in the
+# off-season -- it'll run at 10:30 AM ET instead of 11:30 during standard time.
+@tasks.loop(time=dtime(hour=15, minute=30))
+async def daily_streaks_post(bot: HittersBot):
+    channel_id = storage.get_config("announce_channel_id")
+    if not channel_id:
+        return
+    channel = bot.get_channel(int(channel_id))
+    if channel is None:
+        return
+
+    log.info("Running daily streaks scan for %d hitters...", len(bot.player_directory))
+    lines = []
+    for p in bot.player_directory:
+        try:
+            splits = mlb_api.get_batting_game_log(p["id"])
+        except Exception as e:
+            log.error("Daily streak scan failed for %s: %s", p["name"], e)
+            continue
+        if not splits:
+            continue
+        streaks = sh.get_active_streaks(splits)
+        notable = sh.notable_streak_labels(streaks)
+        if notable:
+            lines.append(f"**{p['name']}** ({p['team']}): {', '.join(notable)}\n")
+
+    await send_chunked_to_channel(channel, "__**Daily Streak Report**__\n\n", lines)
+    log.info("Daily streaks post complete: %d players with notable streaks", len(lines))
+
+
+@daily_streaks_post.before_loop
+async def before_daily_streaks():
     await client.wait_until_ready()
 
 
