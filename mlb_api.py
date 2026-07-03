@@ -65,3 +65,42 @@ def get_batting_game_log(person_id: int, season: int = CURRENT_SEASON) -> list[d
 
     splits.sort(key=lambda s: s["date"] or "")
     return splits
+
+
+def get_platoon_splits(person_id: int, season: int = CURRENT_SEASON) -> dict:
+    """
+    Season-to-date performance vs LHP and vs RHP. This is a season aggregate
+    (not a rolling window) -- computing a rolling platoon split would require
+    cross-referencing every opposing starter's handedness per game, which
+    isn't reliable to build. Season splits are also the standard way this
+    is used in betting/analysis content anyway.
+    """
+    resp = requests.get(
+        f"{BASE}/people/{person_id}/stats",
+        params={"stats": "statSplits", "group": "hitting", "season": season,
+                "sitCodes": "vl,vr", "gameType": "R"},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+
+    result = {"vs_lhp": None, "vs_rhp": None}
+    for stat_block in data.get("stats", []):
+        for split in stat_block.get("splits", []):
+            code = (split.get("split") or {}).get("code")
+            stat = split.get("stat", {}) or {}
+            parsed = {
+                "ab": stat.get("atBats", 0),
+                "hits": stat.get("hits", 0),
+                "hr": stat.get("homeRuns", 0),
+                "rbi": stat.get("rbi", 0),
+                "avg": stat.get("avg"),
+                "obp": stat.get("obp"),
+                "slg": stat.get("slg"),
+                "ops": stat.get("ops"),
+            }
+            if code == "vl":
+                result["vs_lhp"] = parsed
+            elif code == "vr":
+                result["vs_rhp"] = parsed
+    return result
