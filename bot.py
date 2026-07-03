@@ -27,7 +27,7 @@ def et_date_str(offset_days: int = 0) -> str:
     return et.strftime("%Y-%m-%d")
 
 
-def build_batter_embed(name: str, team: str, splits: list[dict]) -> discord.Embed:
+def build_batter_embed(name: str, team: str, splits: list[dict], platoon: dict | None = None) -> discord.Embed:
     if not splits:
         return discord.Embed(title=name, description="No game log found for this season yet.",
                               color=discord.Color.light_grey())
@@ -77,6 +77,16 @@ def build_batter_embed(name: str, team: str, splits: list[dict]) -> discord.Embe
             inline=False,
         )
 
+    if platoon:
+        for key, label in (("vs_lhp", "vs LHP (season)"), ("vs_rhp", "vs RHP (season)")):
+            p = platoon.get(key)
+            if p and p.get("ab", 0) > 0:
+                embed.add_field(
+                    name=label,
+                    value=f"AVG **{p['avg']}** / OBP {p['obp']} / SLG {p['slg']} / OPS {p['ops']}  ({p['ab']} AB, {p['hr']} HR)",
+                    inline=True,
+                )
+
     embed.set_footer(text="Data: MLB Stats API")
     return embed
 
@@ -125,6 +135,34 @@ class HittersBot(discord.Client):
             callback=self._streaks_callback,
         )
         self.tree.add_command(streaks_cmd)
+
+        hotvlhp_cmd = app_commands.Command(
+            name="hotvslhp",
+            description="League-wide scan: who's mashing lefties this season. Takes a few minutes.",
+            callback=self._hotvslhp_callback,
+        )
+        self.tree.add_command(hotvlhp_cmd)
+
+        coldvlhp_cmd = app_commands.Command(
+            name="coldvslhp",
+            description="League-wide scan: who's struggling vs lefties this season. Takes a few minutes.",
+            callback=self._coldvslhp_callback,
+        )
+        self.tree.add_command(coldvlhp_cmd)
+
+        hotvrhp_cmd = app_commands.Command(
+            name="hotvsrhp",
+            description="League-wide scan: who's mashing righties this season. Takes a few minutes.",
+            callback=self._hotvsrhp_callback,
+        )
+        self.tree.add_command(hotvrhp_cmd)
+
+        coldvrhp_cmd = app_commands.Command(
+            name="coldvsrhp",
+            description="League-wide scan: who's struggling vs righties this season. Takes a few minutes.",
+            callback=self._coldvsrhp_callback,
+        )
+        self.tree.add_command(coldvrhp_cmd)
 
         setchannel_cmd = app_commands.Command(
             name="setchannel",
@@ -176,9 +214,14 @@ class HittersBot(discord.Client):
         except Exception as e:
             await interaction.followup.send(f"Couldn't reach the MLB API right now: {e}")
             return
+        try:
+            platoon = mlb_api.get_platoon_splits(person_id)
+        except Exception as e:
+            log.error("Platoon split lookup failed for %s: %s", name, e)
+            platoon = None
         display_name = match["name"] if match else name
         team = match["team"] if match else "?"
-        await interaction.followup.send(embed=build_batter_embed(display_name, team, splits))
+        await interaction.followup.send(embed=build_batter_embed(display_name, team, splits, platoon))
 
     async def _scan_all_hitters(self, interaction: discord.Interaction):
         """Shared scan used by /hothitters, /coldhitters, /streaks -- one pass over every
@@ -229,6 +272,59 @@ class HittersBot(discord.Client):
                 continue
             lines.append(f"**{r['player']['name']}** ({r['player']['team']}): {', '.join(r['notable'])}\n")
         await self._send_chunked(interaction, "__**Active Notable Streaks**__\n\n", lines)
+
+    async def _scan_platoon(self, interaction: discord.Interaction, side_key: str):
+        side_label = "LHP" if side_key == "vs_lhp" else "RHP"
+        await interaction.followup.send(
+            f"Scanning {len(self.player_directory)} hitters' season vs {side_label} splits, this'll take a few minutes..."
+        )
+        results = []
+        for p in self.player_directory:
+            try:
+                platoon = mlb_api.get_platoon_splits(p["id"])
+            except Exception as e:
+                log.error("Platoon lookup failed for %s: %s", p["name"], e)
+                continue
+            split = platoon.get(side_key)
+            if not split or not split.get("ab") or split["ab"] < 20:
+                continue  # too small a sample to mean anything
+            try:
+                ops = float(split["ops"]) if split.get("ops") not in (None, "-", "") else None
+            except (TypeError, ValueError):
+                ops = None
+            if ops is None:
+                continue
+            results.append({"player": p, "split": split, "ops": ops})
+        return results
+
+    async def _platoon_scan(self, interaction: discord.Interaction, side_key: str, want_hot: bool):
+        await interaction.response.defer()
+        results = await self._scan_platoon(interaction, side_key)
+        threshold_hits = [
+            r for r in results
+            if (r["ops"] >= sh.HOT_OPS_THRESHOLD if want_hot else r["ops"] <= sh.COLD_OPS_THRESHOLD)
+        ]
+        side_label = "LHP" if side_key == "vs_lhp" else "RHP"
+        label = "Hot" if want_hot else "Cold"
+        emoji = "🔥" if want_hot else "🥶"
+        lines = [
+            f"**{r['player']['name']}** ({r['player']['team']}) — {r['split']['ops']} OPS ({r['split']['ab']} AB) vs {side_label}\n"
+            for r in threshold_hits
+        ]
+        header = f"__**{emoji} {label} vs {side_label} (season)**__\n\n"
+        await self._send_chunked(interaction, header, lines)
+
+    async def _hotvslhp_callback(self, interaction: discord.Interaction):
+        await self._platoon_scan(interaction, "vs_lhp", want_hot=True)
+
+    async def _coldvslhp_callback(self, interaction: discord.Interaction):
+        await self._platoon_scan(interaction, "vs_lhp", want_hot=False)
+
+    async def _hotvsrhp_callback(self, interaction: discord.Interaction):
+        await self._platoon_scan(interaction, "vs_rhp", want_hot=True)
+
+    async def _coldvsrhp_callback(self, interaction: discord.Interaction):
+        await self._platoon_scan(interaction, "vs_rhp", want_hot=False)
 
     async def _send_chunked(self, interaction: discord.Interaction, header: str, lines: list[str], limit: int = 1900):
         if not lines:
