@@ -1,6 +1,5 @@
 import os
 import logging
-import io
 from datetime import datetime, timedelta, timezone, time as dtime
 
 import discord
@@ -11,7 +10,6 @@ from dotenv import load_dotenv
 import mlb_api
 import stats_hitting as sh
 import storage
-import card
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -134,14 +132,6 @@ class HittersBot(discord.Client):
         self.tree.add_command(batter_cmd)
         batter_cmd.autocomplete("name")(self._name_autocomplete)
 
-        hittercard_cmd = app_commands.Command(
-            name="hittercard",
-            description="Visual stat card: AVG/OBP/SLG/OPS/HR/RBI, hot/cold, streaks",
-            callback=self._hittercard_callback,
-        )
-        self.tree.add_command(hittercard_cmd)
-        hittercard_cmd.autocomplete("name")(self._name_autocomplete)
-
         hot_cmd = app_commands.Command(
             name="hothitters",
             description="League-wide scan: who's hot right now (last 10 games). Takes a few minutes.",
@@ -253,41 +243,6 @@ class HittersBot(discord.Client):
         display_name = match["name"] if match else name
         team = match["team"] if match else "?"
         await interaction.followup.send(embed=build_batter_embed(display_name, team, splits, platoon, since))
-
-    async def _hittercard_callback(self, interaction: discord.Interaction, name: str):
-        await interaction.response.defer()
-        person_id, match = self._resolve_player(name)
-        if person_id is None:
-            await interaction.followup.send(f"Couldn't find a hitter matching '{name}'.")
-            return
-
-        try:
-            splits = mlb_api.get_batting_game_log(person_id)
-        except Exception as e:
-            await interaction.followup.send(f"Couldn't reach the MLB API right now: {e}")
-            return
-
-        if not splits:
-            await interaction.followup.send("No game log found for this hitter this season yet.")
-            return
-
-        display_name = match["name"] if match else name
-        team = match["team"] if match else "?"
-
-        season = sh.summarize_batting(splits, len(splits))
-        tag = sh.hot_cold_tag(sh.summarize_batting(splits, 10))
-        streaks = sh.get_active_streaks(splits)
-        notable = sh.notable_streak_labels(streaks)
-
-        try:
-            png_bytes = card.build_hitter_card(display_name, team, season, tag, notable, player_id=person_id)
-        except Exception as e:
-            log.error("Card generation failed for %s: %s", display_name, e)
-            await interaction.followup.send(f"Couldn't generate the card: {e}")
-            return
-
-        file = discord.File(io.BytesIO(png_bytes), filename=f"{display_name.replace(' ', '_')}_card.png")
-        await interaction.followup.send(file=file)
 
     async def _scan_all_hitters(self, interaction: discord.Interaction):
         """Shared scan used by /hothitters, /coldhitters, /streaks -- one pass over every
