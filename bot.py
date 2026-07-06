@@ -1,5 +1,6 @@
 import os
 import logging
+import asyncio
 from datetime import datetime, timedelta, timezone, time as dtime
 
 import discord
@@ -132,6 +133,13 @@ class HittersBot(discord.Client):
         self.tree.add_command(batter_cmd)
         batter_cmd.autocomplete("name")(self._name_autocomplete)
 
+        checksplits_cmd = app_commands.Command(
+            name="checksplits",
+            description="Debug: show the real list of valid stat-split codes from MLB",
+            callback=self._checksplits_callback,
+        )
+        self.tree.add_command(checksplits_cmd)
+
         hot_cmd = app_commands.Command(
             name="hothitters",
             description="League-wide scan: who's hot right now (last 10 games). Takes a few minutes.",
@@ -222,6 +230,18 @@ class HittersBot(discord.Client):
             pass
         match = next((p for p in self.player_directory if name.lower() in p["name"].lower()), None)
         return (match["id"], match) if match else (None, None)
+
+    async def _checksplits_callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        try:
+            codes = await asyncio.to_thread(mlb_api.get_situation_codes)
+        except Exception as e:
+            await interaction.followup.send(f"Couldn't fetch situation codes: {e}")
+            return
+
+        lines = [f"`{c.get('code')}` — {c.get('description', c.get('name', '?'))}" for c in codes[:40]]
+        msg = "**Real MLB sitCodes (verified from the API directly):**\n\n" + "\n".join(lines)
+        await interaction.followup.send(msg[:2000])
 
     async def _batter_callback(self, interaction: discord.Interaction, name: str, since: str | None = None):
         await interaction.response.defer()
