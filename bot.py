@@ -140,6 +140,13 @@ class HittersBot(discord.Client):
         )
         self.tree.add_command(checksplits_cmd)
 
+        checkleaders_cmd = app_commands.Command(
+            name="checkleaders",
+            description="Debug: verify stat leader category names against the real API",
+            callback=self._checkleaders_callback,
+        )
+        self.tree.add_command(checkleaders_cmd)
+
         hot_cmd = app_commands.Command(
             name="hothitters",
             description="League-wide scan: who's hot right now (last 10 games). Takes a few minutes.",
@@ -230,6 +237,31 @@ class HittersBot(discord.Client):
             pass
         match = next((p for p in self.player_directory if name.lower() in p["name"].lower()), None)
         return (match["id"], match) if match else (None, None)
+
+    async def _checkleaders_callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        candidates = {
+            "AVG": "battingAverage",
+            "HR": "homeRuns",
+            "RBI": "runsBattedIn",
+            "Runs": "runsScored",
+            "SLG": "sluggingPercentage",
+            "OPS": "onBasePlusSlugging",
+            "SB": "stolenBases",
+        }
+        lines = []
+        for label, cat in candidates.items():
+            try:
+                leaders = await asyncio.to_thread(mlb_api.get_stat_leaders, cat, 3)
+                if leaders:
+                    top = leaders[0]
+                    lines.append(f"✅ {label} (`{cat}`): {top['name']} — {top['value']} (got {len(leaders)} results)")
+                else:
+                    lines.append(f"⚠️ {label} (`{cat}`): request succeeded but returned 0 leaders")
+            except Exception as e:
+                lines.append(f"❌ {label} (`{cat}`): FAILED — {e}")
+
+        await interaction.followup.send("**Leader category verification:**\n\n" + "\n".join(lines))
 
     async def _checksplits_callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
