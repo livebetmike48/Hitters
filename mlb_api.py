@@ -7,6 +7,14 @@ BASE = "https://statsapi.mlb.com/api/v1"
 CURRENT_SEASON = 2026
 
 
+def get_situation_codes() -> list[dict]:
+    """Fetches the real list of valid sitCodes directly from MLB, so we
+    confirm the actual code strings instead of guessing at them."""
+    resp = requests.get(f"{BASE}/situationCodes", timeout=15)
+    resp.raise_for_status()
+    return resp.json()
+
+
 def get_all_teams() -> list[dict]:
     resp = requests.get(f"{BASE}/teams", params={"sportId": 1}, timeout=15)
     resp.raise_for_status()
