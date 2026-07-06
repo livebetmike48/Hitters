@@ -133,20 +133,6 @@ class HittersBot(discord.Client):
         self.tree.add_command(batter_cmd)
         batter_cmd.autocomplete("name")(self._name_autocomplete)
 
-        checksplits_cmd = app_commands.Command(
-            name="checksplits",
-            description="Debug: show the real list of valid stat-split codes from MLB",
-            callback=self._checksplits_callback,
-        )
-        self.tree.add_command(checksplits_cmd)
-
-        checkleaders_cmd = app_commands.Command(
-            name="checkleaders",
-            description="Debug: verify stat leader category names against the real API",
-            callback=self._checkleaders_callback,
-        )
-        self.tree.add_command(checkleaders_cmd)
-
         hot_cmd = app_commands.Command(
             name="hothitters",
             description="League-wide scan: who's hot right now (last 10 games). Takes a few minutes.",
@@ -237,43 +223,6 @@ class HittersBot(discord.Client):
             pass
         match = next((p for p in self.player_directory if name.lower() in p["name"].lower()), None)
         return (match["id"], match) if match else (None, None)
-
-    async def _checkleaders_callback(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        candidates = {
-            "AVG": "battingAverage",
-            "HR": "homeRuns",
-            "RBI": "runsBattedIn",
-            "Runs": "runsScored",
-            "SLG": "sluggingPercentage",
-            "OPS": "onBasePlusSlugging",
-            "SB": "stolenBases",
-        }
-        lines = []
-        for label, cat in candidates.items():
-            try:
-                leaders = await asyncio.to_thread(mlb_api.get_stat_leaders, cat, 3)
-                if leaders:
-                    top = leaders[0]
-                    lines.append(f"✅ {label} (`{cat}`): {top['name']} — {top['value']} (got {len(leaders)} results)")
-                else:
-                    lines.append(f"⚠️ {label} (`{cat}`): request succeeded but returned 0 leaders")
-            except Exception as e:
-                lines.append(f"❌ {label} (`{cat}`): FAILED — {e}")
-
-        await interaction.followup.send("**Leader category verification:**\n\n" + "\n".join(lines))
-
-    async def _checksplits_callback(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        try:
-            codes = await asyncio.to_thread(mlb_api.get_situation_codes)
-        except Exception as e:
-            await interaction.followup.send(f"Couldn't fetch situation codes: {e}")
-            return
-
-        lines = [f"`{c.get('code')}` — {c.get('description', c.get('name', '?'))}" for c in codes[:40]]
-        msg = "**Real MLB sitCodes (verified from the API directly):**\n\n" + "\n".join(lines)
-        await interaction.followup.send(msg[:2000])
 
     async def _batter_callback(self, interaction: discord.Interaction, name: str, since: str | None = None):
         await interaction.response.defer()
