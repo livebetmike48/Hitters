@@ -11,6 +11,7 @@ aggregate a rate stat over multiple games.
 HOT_OPS_THRESHOLD = 0.900
 COLD_OPS_THRESHOLD = 0.550
 MIN_GAMES_FOR_TAG = 5
+MIN_PA_FOR_HOT_COLD = 20  # over the Last-10 window
 
 # Streak thresholds worth calling out automatically
 NOTABLE_HIT_STREAK = 5
@@ -35,6 +36,7 @@ def summarize_batting(splits: list[dict], n: int) -> dict | None:
     sf = sum(s.get("sf", 0) for s in recent)
     rbi = sum(s["rbi"] for s in recent)
     sb = sum(s.get("sb", 0) for s in recent)
+    pa = ab + bb + hbp + sf  # standard PA approximation (omits rare sac bunts)
 
     avg = round(hits / ab, 3) if ab > 0 else None
 
@@ -49,7 +51,7 @@ def summarize_batting(splits: list[dict], n: int) -> dict | None:
 
     return {
         "count": len(recent),
-        "ab": ab, "hits": hits, "hr": hr, "rbi": rbi, "bb": bb, "so": so, "sb": sb,
+        "ab": ab, "hits": hits, "hr": hr, "rbi": rbi, "bb": bb, "so": so, "sb": sb, "pa": pa,
         "avg": avg, "obp": obp, "slg": slg, "ops": ops,
     }
 
@@ -94,6 +96,8 @@ def notable_streak_labels(streaks: dict) -> list[str]:
 
 def hot_cold_tag(summary: dict | None) -> str | None:
     if not summary or summary["count"] < MIN_GAMES_FOR_TAG or summary["ops"] is None:
+        return None
+    if summary.get("pa", 0) < MIN_PA_FOR_HOT_COLD:
         return None
     if summary["ops"] >= HOT_OPS_THRESHOLD:
         return "🔥 Hot"
