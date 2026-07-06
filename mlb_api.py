@@ -7,6 +7,29 @@ BASE = "https://statsapi.mlb.com/api/v1"
 CURRENT_SEASON = 2026
 
 
+def get_stat_leaders(category: str, limit: int = 10, season: int = CURRENT_SEASON) -> list[dict]:
+    """Fetches league-wide stat leaders for a given category (e.g. 'homeRuns',
+    'battingAverage'). Category names are camelCase MLB stat field names."""
+    resp = requests.get(
+        f"{BASE}/stats/leaders",
+        params={"leaderCategories": category, "season": season, "limit": limit,
+                "sportId": 1, "statGroup": "hitting"},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    leaders = []
+    for cat in data.get("leagueLeaders", []):
+        for leader in cat.get("leaders", []):
+            leaders.append({
+                "rank": leader.get("rank"),
+                "name": (leader.get("person") or {}).get("fullName"),
+                "team": (leader.get("team") or {}).get("abbreviation"),
+                "value": leader.get("value"),
+            })
+    return leaders
+
+
 def get_situation_codes() -> list[dict]:
     """Fetches the real list of valid sitCodes directly from MLB, so we
     confirm the actual code strings instead of guessing at them."""
