@@ -125,6 +125,9 @@ class HittersBot(discord.Client):
             self.teams = []
         await self.refresh_player_directory()
 
+        for team in self.teams:
+            self._register_lineup_command(team)
+
         batter_cmd = app_commands.Command(
             name="batter",
             description="Recent stats, streaks, hot/cold status for any hitter (optional: since YYYY-MM-DD)",
@@ -194,6 +197,49 @@ class HittersBot(discord.Client):
             log.info("Synced %d slash commands", len(synced))
         except Exception as e:
             log.error("Slash command sync failed: %s", e)
+
+    def _register_lineup_command(self, team: dict):
+        cmd_name = f"{team['abbreviation'].lower()}lineup"
+        callback = self._make_lineup_callback(team)
+        command = app_commands.Command(
+            name=cmd_name,
+            description=f"{team['name']} lineup for today's game, once posted",
+            callback=callback,
+        )
+        self.tree.add_command(command)
+
+    def _make_lineup_callback(self, team: dict):
+        async def callback(interaction: discord.Interaction):
+            await interaction.response.defer()
+            date_str = et_date_str(0)
+            try:
+                games = await asyncio.to_thread(mlb_api.get_live_games, date_str)
+            except Exception as e:
+                await interaction.followup.send(f"Couldn't reach the MLB API right now: {e}")
+                return
+
+            game = next(
+                (g for g in games if team["name"] in (g["away_team"], g["home_team"])),
+                None,
+            )
+            if game is None:
+                await interaction.followup.send(f"{team['name']} don't have a game scheduled today.")
+                return
+
+            try:
+                lineup_data = await asyncio.to_thread(mlb_api.get_lineup, game["game_pk"])
+            except Exception as e:
+                await interaction.followup.send(f"Couldn't reach the MLB API right now: {e}")
+                return
+
+            if lineup_data is None:
+                await interaction.followup.send(
+                    f"{team['name']}'s lineup hasn't been posted yet -- usually available 1-3 hours before first pitch."
+                )
+                return
+
+            await interaction.followup.send(embed=build_lineup_embed(lineup_data["away"], lineup_data["home"]))
+        return callback
 
     async def refresh_player_directory(self):
         directory = []
@@ -371,6 +417,8 @@ class HittersBot(discord.Client):
             refresh_directory_loop.start(self)
         if not daily_streaks_post.is_running():
             daily_streaks_post.start(self)
+        if not poll_lineups.is_running():
+            poll_lineups.start(self)
 
 
 client = HittersBot()
@@ -389,6 +437,73 @@ async def send_chunked_to_channel(channel, header: str, lines: list[str], limit:
         chunk += line
     if chunk.strip():
         await channel.send(chunk)
+
+
+def build_lineup_embed(away_data: dict, home_data: dict) -> discord.Embed:
+    embed = discord.Embed(
+        title=f"Lineups: {away_data['team_name']} @ {home_data['team_name']}",
+        color=discord.Color.green(),
+    )
+    for side_label, data in (("Away", away_data), ("Home", home_data)):
+        lines = [f"{i+1}. {p['name']} ({p['position']})" for i, p in enumerate(data["lineup"])]
+        embed.add_field(name=f"{data['team_name']} ({side_label})", value="\n".join(lines), inline=True)
+    embed.set_footer(text="Data: MLB Stats API")
+    return embed
+
+
+LINEUP_POLL_SECONDS = int(os.getenv("LINEUP_POLL_SECONDS", "120"))
+
+
+@tasks.loop(seconds=LINEUP_POLL_SECONDS)
+async def poll_lineups(bot: HittersBot):
+    try:
+        await _poll_lineups_body(bot)
+    except Exception as e:
+        log.error("poll_lineups cycle failed unexpectedly, will retry next cycle: %s", e)
+
+
+async def _poll_lineups_body(bot: HittersBot):
+    channel_id = storage.get_config("announce_channel_id")
+    if not channel_id:
+        return
+    channel = bot.get_channel(int(channel_id))
+    if channel is None:
+        return
+
+    date_str = et_date_str(0)
+    try:
+        games = await asyncio.to_thread(mlb_api.get_live_games, date_str)
+    except Exception as e:
+        log.error("Failed to fetch today's schedule for lineup polling: %s", e)
+        return
+
+    for g in games:
+        game_pk = g["game_pk"]
+        if g["abstract_state"] not in ("Preview", "Live"):
+            continue  # Final games' lineups aren't "new" anymore; skip
+        if storage.lineup_already_posted(game_pk):
+            continue
+
+        try:
+            lineup_data = await asyncio.to_thread(mlb_api.get_lineup, game_pk)
+        except Exception as e:
+            log.error("Lineup check failed for game %s: %s", game_pk, e)
+            continue
+
+        if lineup_data is None:
+            continue  # not posted yet -- check again next cycle
+
+        storage.mark_lineup_posted(game_pk)
+        try:
+            await channel.send(embed=build_lineup_embed(lineup_data["away"], lineup_data["home"]))
+            log.info("Posted lineup for game %s", game_pk)
+        except Exception as e:
+            log.error("Failed to send lineup for game %s: %s", game_pk, e)
+
+
+@poll_lineups.before_loop
+async def before_poll_lineups():
+    await client.wait_until_ready()
 
 
 @tasks.loop(hours=ROSTER_REFRESH_HOURS)
