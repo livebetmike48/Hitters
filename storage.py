@@ -24,6 +24,22 @@ def init_db():
                 value TEXT
             )
         """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS posted_lineups (
+                game_pk INTEGER PRIMARY KEY
+            )
+        """)
+
+
+def lineup_already_posted(game_pk: int) -> bool:
+    with _conn() as c:
+        row = c.execute("SELECT 1 FROM posted_lineups WHERE game_pk = ?", (game_pk,)).fetchone()
+        return row is not None
+
+
+def mark_lineup_posted(game_pk: int):
+    with _conn() as c:
+        c.execute("INSERT OR IGNORE INTO posted_lineups (game_pk) VALUES (?)", (game_pk,))
 
 
 def set_config(key: str, value: str):
