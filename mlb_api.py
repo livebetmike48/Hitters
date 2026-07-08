@@ -7,6 +7,65 @@ BASE = "https://statsapi.mlb.com/api/v1"
 CURRENT_SEASON = 2026
 
 
+def get_live_games(date_str: str) -> list[dict]:
+    """Today's schedule with basic game state info."""
+    resp = requests.get(
+        f"{BASE}/schedule",
+        params={"sportId": 1, "date": date_str},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    games = []
+    for date_entry in data.get("dates", []):
+        for g in date_entry.get("games", []):
+            games.append({
+                "game_pk": g["gamePk"],
+                "abstract_state": g["status"].get("abstractGameState"),
+                "away_team": g["teams"]["away"]["team"]["name"],
+                "home_team": g["teams"]["home"]["team"]["name"],
+            })
+    return games
+
+
+def get_lineup(game_pk: int) -> dict | None:
+    """
+    Returns confirmed starting lineups for both teams, or None if lineups
+    haven't been officially posted yet. Structure confirmed against MLB's
+    real boxscore response: liveData.boxscore.teams.{away|home}.battingOrder
+    is a list of player IDs in batting order, cross-referenced against that
+    team's players dict for name/position.
+    """
+    resp = requests.get(f"{BASE}/game/{game_pk}/boxscore", timeout=15)
+    resp.raise_for_status()
+    data = resp.json()
+
+    teams = data.get("teams", {})
+    result = {}
+    for side in ("away", "home"):
+        team_data = teams.get(side, {})
+        batting_order = team_data.get("battingOrder", [])
+        if not batting_order:
+            return None  # lineup not posted yet for this side -- not ready
+
+        players = team_data.get("players", {})
+        lineup = []
+        for pid in batting_order:
+            p = players.get(f"ID{pid}", {})
+            person = p.get("person", {})
+            position = (p.get("position") or {}).get("abbreviation", "?")
+            lineup.append({"name": person.get("fullName", "Unknown"), "position": position})
+
+        result[side] = {
+            "team_name": (team_data.get("team") or {}).get("name", "?"),
+            "lineup": lineup,
+        }
+
+    if "away" not in result or "home" not in result:
+        return None
+    return result
+
+
 def get_stat_leaders(category: str, limit: int = 10, season: int = CURRENT_SEASON) -> list[dict]:
     """Fetches league-wide stat leaders for a given category (e.g. 'homeRuns',
     'battingAverage'). Category names are camelCase MLB stat field names."""
