@@ -109,6 +109,20 @@ def build_batter_embed(name: str, team: str, splits: list[dict], platoon: dict |
     return embed
 
 
+def build_team_lineup_embed(side_data: dict, opponent_name: str, side_label: str) -> discord.Embed:
+    """One TEAM's lineup, posted the moment that team announces -- no
+    waiting for the opponent (July 18 change: speed is the point)."""
+    vs_at = "@" if side_label == "Away" else "vs"
+    embed = discord.Embed(
+        title=f"📋 {side_data['team_name']} lineup ({vs_at} {opponent_name})",
+        color=discord.Color.green(),
+    )
+    lines = [f"{i+1}. {p['name']} ({p['position']})" for i, p in enumerate(side_data["lineup"])]
+    embed.description = "\n".join(lines)
+    embed.set_footer(text="Data: MLB Stats API")
+    return embed
+
+
 class HittersBot(discord.Client):
     def __init__(self):
         super().__init__(intents=intents)
@@ -227,18 +241,24 @@ class HittersBot(discord.Client):
                 return
 
             try:
-                lineup_data = await asyncio.to_thread(mlb_api.get_lineup, game["game_pk"])
+                lineups = await asyncio.to_thread(mlb_api.get_lineup, game["game_pk"])
             except Exception as e:
                 await interaction.followup.send(f"Couldn't reach the MLB API right now: {e}")
                 return
 
-            if lineup_data is None:
+            side = "away" if game["away_team"] == team["name"] else "home"
+            opponent = game["home_team"] if side == "away" else game["away_team"]
+            side_data = lineups.get(side)
+
+            if side_data is None:
                 await interaction.followup.send(
                     f"{team['name']}'s lineup hasn't been posted yet -- usually available 1-3 hours before first pitch."
                 )
                 return
 
-            await interaction.followup.send(embed=build_lineup_embed(lineup_data["away"], lineup_data["home"]))
+            await interaction.followup.send(
+                embed=build_team_lineup_embed(side_data, opponent, "Away" if side == "away" else "Home")
+            )
         return callback
 
     async def refresh_player_directory(self):
@@ -439,18 +459,6 @@ async def send_chunked_to_channel(channel, header: str, lines: list[str], limit:
         await channel.send(chunk)
 
 
-def build_lineup_embed(away_data: dict, home_data: dict) -> discord.Embed:
-    embed = discord.Embed(
-        title=f"Lineups: {away_data['team_name']} @ {home_data['team_name']}",
-        color=discord.Color.green(),
-    )
-    for side_label, data in (("Away", away_data), ("Home", home_data)):
-        lines = [f"{i+1}. {p['name']} ({p['position']})" for i, p in enumerate(data["lineup"])]
-        embed.add_field(name=f"{data['team_name']} ({side_label})", value="\n".join(lines), inline=True)
-    embed.set_footer(text="Data: MLB Stats API")
-    return embed
-
-
 LINEUP_POLL_SECONDS = int(os.getenv("LINEUP_POLL_SECONDS", "120"))
 
 
@@ -481,24 +489,33 @@ async def _poll_lineups_body(bot: HittersBot):
         game_pk = g["game_pk"]
         if g["abstract_state"] not in ("Preview", "Live"):
             continue  # Final games' lineups aren't "new" anymore; skip
-        if storage.lineup_already_posted(game_pk):
+
+        # July 18 change: each SIDE posts independently the moment that
+        # team's lineup is announced -- no waiting for the opponent.
+        pending_sides = [s for s in ("away", "home") if not storage.lineup_side_posted(game_pk, s)]
+        if not pending_sides:
             continue
 
         try:
-            lineup_data = await asyncio.to_thread(mlb_api.get_lineup, game_pk)
+            lineups = await asyncio.to_thread(mlb_api.get_lineup, game_pk)
         except Exception as e:
             log.error("Lineup check failed for game %s: %s", game_pk, e)
             continue
 
-        if lineup_data is None:
-            continue  # not posted yet -- check again next cycle
+        for side in pending_sides:
+            side_data = lineups.get(side)
+            if side_data is None:
+                continue  # this team hasn't announced yet -- next cycle
 
-        storage.mark_lineup_posted(game_pk)
-        try:
-            await channel.send(embed=build_lineup_embed(lineup_data["away"], lineup_data["home"]))
-            log.info("Posted lineup for game %s", game_pk)
-        except Exception as e:
-            log.error("Failed to send lineup for game %s: %s", game_pk, e)
+            opponent = g["home_team"] if side == "away" else g["away_team"]
+            side_label = "Away" if side == "away" else "Home"
+
+            storage.mark_lineup_side_posted(game_pk, side)
+            try:
+                await channel.send(embed=build_team_lineup_embed(side_data, opponent, side_label))
+                log.info("Posted %s lineup for game %s (%s)", side, game_pk, side_data["team_name"])
+            except Exception as e:
+                log.error("Failed to send %s lineup for game %s: %s", side, game_pk, e)
 
 
 @poll_lineups.before_loop
