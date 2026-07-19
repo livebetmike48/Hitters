@@ -28,25 +28,29 @@ def get_live_games(date_str: str) -> list[dict]:
     return games
 
 
-def get_lineup(game_pk: int) -> dict | None:
+def get_lineup(game_pk: int) -> dict:
     """
-    Returns confirmed starting lineups for both teams, or None if lineups
-    haven't been officially posted yet. Structure confirmed against MLB's
-    real boxscore response: liveData.boxscore.teams.{away|home}.battingOrder
-    is a list of player IDs in batting order, cross-referenced against that
-    team's players dict for name/position.
+    Returns each side's confirmed starting lineup INDEPENDENTLY:
+      {"away": {...} | None, "home": {...} | None}
+    A side is None until its batting order is officially posted.
+
+    July 18 change: previously this returned None unless BOTH sides were
+    posted, which made the lineup poster wait for the slower team --
+    sometimes an hour after the first lineup dropped. Teams post lineups
+    independently, and for betting purposes the FIRST lineup is the
+    time-sensitive one, so each side now stands alone.
     """
     resp = requests.get(f"{BASE}/game/{game_pk}/boxscore", timeout=15)
     resp.raise_for_status()
     data = resp.json()
 
     teams = data.get("teams", {})
-    result = {}
+    result = {"away": None, "home": None}
     for side in ("away", "home"):
         team_data = teams.get(side, {})
         batting_order = team_data.get("battingOrder", [])
         if not batting_order:
-            return None  # lineup not posted yet for this side -- not ready
+            continue  # this side not posted yet; the other may still be
 
         players = team_data.get("players", {})
         lineup = []
@@ -61,8 +65,6 @@ def get_lineup(game_pk: int) -> dict | None:
             "lineup": lineup,
         }
 
-    if "away" not in result or "home" not in result:
-        return None
     return result
 
 
