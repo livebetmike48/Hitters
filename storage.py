@@ -29,17 +29,42 @@ def init_db():
                 game_pk INTEGER PRIMARY KEY
             )
         """)
+        # July 18: lineups now post per-SIDE the moment each team announces,
+        # instead of waiting for both. Dedupe is therefore per (game, side).
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS posted_lineup_sides (
+                game_pk INTEGER,
+                side TEXT,               -- 'away' or 'home'
+                PRIMARY KEY (game_pk, side)
+            )
+        """)
+        # Migration: games already posted under the old whole-game system
+        # count as both sides posted, so nothing already announced reposts.
+        c.execute("""
+            INSERT OR IGNORE INTO posted_lineup_sides (game_pk, side)
+            SELECT game_pk, 'away' FROM posted_lineups
+        """)
+        c.execute("""
+            INSERT OR IGNORE INTO posted_lineup_sides (game_pk, side)
+            SELECT game_pk, 'home' FROM posted_lineups
+        """)
 
 
-def lineup_already_posted(game_pk: int) -> bool:
+def lineup_side_posted(game_pk: int, side: str) -> bool:
     with _conn() as c:
-        row = c.execute("SELECT 1 FROM posted_lineups WHERE game_pk = ?", (game_pk,)).fetchone()
+        row = c.execute(
+            "SELECT 1 FROM posted_lineup_sides WHERE game_pk = ? AND side = ?",
+            (game_pk, side),
+        ).fetchone()
         return row is not None
 
 
-def mark_lineup_posted(game_pk: int):
+def mark_lineup_side_posted(game_pk: int, side: str):
     with _conn() as c:
-        c.execute("INSERT OR IGNORE INTO posted_lineups (game_pk) VALUES (?)", (game_pk,))
+        c.execute(
+            "INSERT OR IGNORE INTO posted_lineup_sides (game_pk, side) VALUES (?, ?)",
+            (game_pk, side),
+        )
 
 
 def set_config(key: str, value: str):
